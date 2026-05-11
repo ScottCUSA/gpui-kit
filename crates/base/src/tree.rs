@@ -256,6 +256,14 @@ impl TreeState {
         self.selected_ix.and_then(|ix| self.entries.get(ix))
     }
 
+    /// Toggles expansion for the folder at `ix` without changing the selected item, then notifies.
+    ///
+    /// Use this for disclosure controls; list row clicks also move selection when expanding.
+    pub fn toggle_expand(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.toggle_entry_expanded(ix, cx);
+        cx.notify();
+    }
+
     pub fn entry(&self, ix: usize) -> Option<&TreeEntry> {
         self.entries.get(ix)
     }
@@ -371,7 +379,7 @@ impl TreeState {
         }
     }
 
-    fn toggle_expand(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn toggle_entry_expanded(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(entry) = self.entries.get(ix) else {
             return;
         };
@@ -392,12 +400,17 @@ impl TreeState {
     }
 
     fn rebuild_entries(&mut self) {
+        // Flat indices change when the visible row list is rebuilt; track selection by item id.
+        let selected_id = self
+            .selected_ix
+            .and_then(|ix| self.entries.get(ix).map(|entry| entry.item.id.clone()));
         let roots = std::mem::take(&mut self.entries)
             .into_iter()
             .filter(TreeEntry::is_root)
             .map(|entry| entry.item)
             .collect::<Vec<_>>();
         self.replace_items(roots);
+        self.selected_ix = selected_id.and_then(|id| self.index_of(&id));
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -406,7 +419,7 @@ impl TreeState {
             .and_then(|ix| self.entries.get(ix).map(|entry| (ix, entry.is_folder())))
             .is_some_and(|(ix, is_folder)| {
                 if is_folder {
-                    self.toggle_expand(ix, cx);
+                    self.toggle_entry_expanded(ix, cx);
                 }
                 is_folder
             })
@@ -422,7 +435,7 @@ impl TreeState {
                 .get(ix)
                 .is_some_and(|entry| entry.is_folder() && entry.is_expanded())
         {
-            self.toggle_expand(ix, cx);
+            self.toggle_entry_expanded(ix, cx);
             cx.notify();
         }
     }
@@ -434,7 +447,7 @@ impl TreeState {
                 .get(ix)
                 .is_some_and(|entry| entry.is_folder() && !entry.is_expanded())
         {
-            self.toggle_expand(ix, cx);
+            self.toggle_entry_expanded(ix, cx);
             cx.notify();
         }
     }
@@ -465,7 +478,7 @@ impl TreeState {
 
     fn on_entry_click(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.selected_ix = Some(ix);
-        self.toggle_expand(ix, cx);
+        self.toggle_entry_expanded(ix, cx);
         cx.notify();
     }
 }
@@ -761,6 +774,48 @@ mod tests {
                 state.expanded_folder_ids(),
                 vec![SharedString::from("a"), SharedString::from("a/b")]
             );
+        });
+    }
+
+    #[gpui::test]
+    fn test_toggle_expand_does_not_change_selected_index(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("root", "root").expanded(true).child(
+                TreeItem::new("root/inner", "inner")
+                    .expanded(true)
+                    .child(TreeItem::new("root/inner/a", "a")),
+            ),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        state.update(cx, |state, ctx| {
+            state.set_selected_index(Some(1), ctx);
+            let ix_before = state.selected_index();
+            state.toggle_expand(1, ctx);
+            assert_eq!(state.selected_index(), ix_before);
+            assert!(!state.entries[1].is_expanded());
+        });
+    }
+
+    #[gpui::test]
+    fn test_rebuild_preserves_selected_item_by_id(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("a", "a")
+                .expanded(false)
+                .child(TreeItem::new("a/c", "c")),
+            TreeItem::new("b", "b"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        state.update(cx, |state, ctx| {
+            let b_id = state.entries[1].item.id.clone();
+            state.set_selected_index(Some(1), ctx);
+            state.toggle_expand(0, ctx);
+            ctx.notify();
+            let b_ix = state
+                .entries
+                .iter()
+                .position(|e| e.item.id == b_id)
+                .expect("selected item still present after expand");
+            assert_eq!(state.selected_index(), Some(b_ix));
         });
     }
 }
