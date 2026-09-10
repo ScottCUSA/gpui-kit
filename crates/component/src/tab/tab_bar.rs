@@ -1,9 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    Anchor, AnyElement, App, Background, Bounds, Edges, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, App, Background, Bounds, ClickEvent, Edges, ElementId, InteractiveElement,
+    IntoElement, ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_base::spring;
 use rust_i18n::t;
@@ -16,6 +17,9 @@ use crate::{
     ActiveTheme, ElementExt, Icon, Selectable, Sizable, Size, StyledExt, h_flex,
     styled::raised_shadow,
 };
+
+type TabClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type TabBarClickHandler = Rc<dyn Fn(&usize, &mut Window, &mut App) + 'static>;
 
 struct TabIndicatorBounds {
     container: Bounds<Pixels>,
@@ -51,7 +55,7 @@ pub struct TabBar {
     size: Size,
     menu: bool,
     max_width: Option<Pixels>,
-    on_click: Option<Rc<dyn Fn(&usize, &mut Window, &mut App) + 'static>>,
+    on_click: Option<TabBarClickHandler>,
 }
 
 impl TabBar {
@@ -431,7 +435,12 @@ impl RenderOnce for TabBar {
         let indicator_ready = indicator_element.is_some();
 
         let has_suffix_or_menu = self.suffix.is_some() || self.menu;
-        let mut item_metas: Vec<(Option<SharedString>, Option<Icon>, bool)> = Vec::new();
+        let mut item_metas: Vec<(
+            Option<SharedString>,
+            Option<Icon>,
+            bool,
+            Option<TabClickHandler>,
+        )> = Vec::new();
         let selected_index = self.selected_index;
         let on_click = self.on_click.clone();
         let tabs = self.base;
@@ -439,7 +448,12 @@ impl RenderOnce for TabBar {
         let max_width = self.max_width;
 
         for (ix, child) in self.children.into_iter().enumerate() {
-            item_metas.push((child.label.clone(), child.icon.clone(), child.disabled));
+            item_metas.push((
+                child.label.clone(),
+                child.icon.clone(),
+                child.disabled,
+                child.on_click.clone(),
+            ));
             let tab_bar_prefix = child.tab_bar_prefix.unwrap_or(true);
             let mut tab = child
                 .ix(ix)
@@ -558,7 +572,9 @@ impl RenderOnce for TabBar {
                         .dropdown_caret(true)
                         .dropdown_menu(move |mut this, _, _| {
                             this = this.scrollable(true);
-                            for (ix, (label, icon, disabled)) in item_metas.iter().enumerate() {
+                            for (ix, (label, icon, disabled, child_on_click)) in
+                                item_metas.iter().enumerate()
+                            {
                                 let base = if let Some(label) = label.clone() {
                                     PopupMenuItem::new(label)
                                 } else if let Some(icon) = icon.clone() {
@@ -566,15 +582,18 @@ impl RenderOnce for TabBar {
                                 } else {
                                     PopupMenuItem::new(t!("Dock.Unnamed"))
                                 };
-                                this = this.item(
-                                    base.checked(selected_index == Some(ix))
-                                        .disabled(*disabled)
-                                        .when_some(on_click.clone(), |this, on_click| {
-                                            this.on_click(move |_, window, cx| {
-                                                on_click(&ix, window, cx)
-                                            })
-                                        }),
-                                );
+                                let item =
+                                    base.checked(selected_index == Some(ix)).disabled(*disabled);
+                                let item = if let Some(on_click) = on_click.clone() {
+                                    item.on_click(move |_, window, cx| on_click(&ix, window, cx))
+                                } else if let Some(child_on_click) = child_on_click.clone() {
+                                    item.on_click(move |event, window, cx| {
+                                        child_on_click(event, window, cx)
+                                    })
+                                } else {
+                                    item
+                                };
+                                this = this.item(item);
                             }
 
                             this
@@ -671,6 +690,90 @@ mod tests {
         cx.simulate_click(position, Modifiers::default());
         assert_eq!(child_clicks.get(), 0);
         assert_eq!(group_clicks.get(), 0);
+    }
+
+    struct OverflowMenuHarness {
+        group_handler: bool,
+        child_clicks: Rc<Cell<Option<usize>>>,
+        group_clicks: Rc<Cell<Option<usize>>>,
+    }
+
+    impl Render for OverflowMenuHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let child_clicks = self.child_clicks.clone();
+            let group_clicks = self.group_clicks.clone();
+            div()
+                .w(px(100.))
+                .h(px(40.))
+                .debug_selector(|| "overflow-bar".into())
+                .child(
+                    TabBar::new("overflow-tabs")
+                        .w_full()
+                        .menu(true)
+                        .children((0..3).map(|ix| {
+                            let child_clicks = child_clicks.clone();
+                            Tab::new()
+                                .w(px(60.))
+                                .label(format!("Tab {ix}"))
+                                .on_click(move |_, _, _| child_clicks.set(Some(ix)))
+                        }))
+                        .when(self.group_handler, |tabs| {
+                            tabs.on_click(move |ix, _, _| group_clicks.set(Some(*ix)))
+                        }),
+                )
+        }
+    }
+
+    /// Opens the overflow menu and clicks its `item_ix`-th entry, returning the
+    /// tab indices reported by the child and group callbacks.
+    fn click_overflow_menu_item(
+        cx: &mut TestAppContext,
+        group_handler: bool,
+        item_ix: usize,
+    ) -> (Option<usize>, Option<usize>) {
+        cx.update(|cx| crate::init(cx));
+        let child_clicks = Rc::new(Cell::new(None));
+        let group_clicks = Rc::new(Cell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let child_clicks = child_clicks.clone();
+            let group_clicks = group_clicks.clone();
+            move |_, _| OverflowMenuHarness {
+                group_handler,
+                child_clicks,
+                group_clicks,
+            }
+        });
+        draw(cx);
+
+        let bar = cx.debug_bounds("overflow-bar").unwrap();
+        cx.simulate_mouse_down(
+            point(bar.right() - px(12.), bar.center().y),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        draw(cx);
+
+        // Menu rows are about 28px tall, starting just below the bar.
+        cx.simulate_click(
+            point(
+                bar.left() + px(40.),
+                bar.bottom() + px(12. + 28. * item_ix as f32),
+            ),
+            Modifiers::default(),
+        );
+        draw(cx);
+        (child_clicks.get(), group_clicks.get())
+    }
+
+    #[gpui::test]
+    fn overflow_menu_item_invokes_child_callback(cx: &mut TestAppContext) {
+        assert_eq!(click_overflow_menu_item(cx, false, 1), (Some(1), None));
+    }
+
+    #[gpui::test]
+    fn overflow_menu_group_callback_overrides_child_callback(cx: &mut TestAppContext) {
+        assert_eq!(click_overflow_menu_item(cx, true, 1), (None, Some(1)));
     }
 
     struct ContentHarness;
