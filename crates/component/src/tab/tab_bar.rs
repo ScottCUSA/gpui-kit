@@ -13,8 +13,8 @@ use super::{Tab, TabVariant};
 use crate::button::{Button, ButtonVariants as _};
 use crate::menu::{DropdownMenu as _, PopupMenuItem};
 use crate::{
-    ActiveTheme, ElementExt, Icon, InteractiveElementExt as _, Selectable, Sizable, Size,
-    StyledExt, h_flex, styled::raised_shadow,
+    ActiveTheme, ElementExt, Icon, Selectable, Sizable, Size, StyledExt, h_flex,
+    styled::raised_shadow,
 };
 
 struct TabIndicatorBounds {
@@ -543,7 +543,6 @@ impl RenderOnce for TabBar {
                             .relative()
                             .gap(gap)
                             .overflow_x_scroll()
-                            .lock_scroll_axis()
                             .when_some(self.scroll_handle, |this, scroll_handle| {
                                 this.track_scroll(&scroll_handle)
                             })
@@ -591,7 +590,7 @@ impl RenderOnce for TabBar {
 mod tests {
     use std::{cell::Cell, rc::Rc};
 
-    use gpui::{Context, Modifiers, Render, TestAppContext};
+    use gpui::{Context, Modifiers, Render, ScrollDelta, ScrollWheelEvent, TestAppContext, point};
 
     use super::*;
 
@@ -813,6 +812,34 @@ mod tests {
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn scroll(cx: &mut gpui::VisualTestContext, x: f32, y: f32, dx: f32, dy: f32) {
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(x), px(y)),
+            delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
+            ..Default::default()
+        });
+        draw(cx);
+    }
+
+    #[gpui::test]
+    fn wheel_scroll_overflowing_tab_bar_moves_tabs(cx: &mut TestAppContext) {
+        cx.update(crate::theme::init);
+        let scroll_handle = ScrollHandle::new();
+        let (_, cx) = cx.add_window_view({
+            let scroll_handle = scroll_handle.clone();
+            move |_, _| ScrollHarness { scroll_handle }
+        });
+
+        draw(cx);
+        let initial_x = cx.debug_bounds("tab-0").unwrap().origin.x;
+        scroll(cx, 50., 10., 0., -50.);
+
+        assert!(
+            cx.debug_bounds("tab-0").unwrap().origin.x < initial_x,
+            "wheel scrolling over an overflowing tab bar should move horizontal tab content"
+        );
     }
 
     #[gpui::test]
