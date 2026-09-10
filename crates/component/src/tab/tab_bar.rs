@@ -1,9 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    Anchor, AnyElement, App, Background, Bounds, Edges, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, App, Background, Bounds, ClickEvent, Edges, ElementId, InteractiveElement,
+    IntoElement, ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_base::spring;
 use rust_i18n::t;
@@ -16,6 +17,9 @@ use crate::{
     ActiveTheme, ElementExt, Icon, Selectable, Sizable, Size, StyledExt, h_flex,
     styled::raised_shadow,
 };
+
+type TabClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type TabBarClickHandler = Rc<dyn Fn(&usize, &mut Window, &mut App) + 'static>;
 
 struct TabIndicatorBounds {
     container: Bounds<Pixels>,
@@ -51,7 +55,7 @@ pub struct TabBar {
     size: Size,
     menu: bool,
     max_width: Option<Pixels>,
-    on_click: Option<Rc<dyn Fn(&usize, &mut Window, &mut App) + 'static>>,
+    on_click: Option<TabBarClickHandler>,
 }
 
 impl TabBar {
@@ -431,7 +435,12 @@ impl RenderOnce for TabBar {
         let indicator_ready = indicator_element.is_some();
 
         let has_suffix_or_menu = self.suffix.is_some() || self.menu;
-        let mut item_metas: Vec<(Option<SharedString>, Option<Icon>, bool)> = Vec::new();
+        let mut item_metas: Vec<(
+            Option<SharedString>,
+            Option<Icon>,
+            bool,
+            Option<TabClickHandler>,
+        )> = Vec::new();
         let selected_index = self.selected_index;
         let on_click = self.on_click.clone();
         let tabs = self.base;
@@ -439,7 +448,12 @@ impl RenderOnce for TabBar {
         let max_width = self.max_width;
 
         for (ix, child) in self.children.into_iter().enumerate() {
-            item_metas.push((child.label.clone(), child.icon.clone(), child.disabled));
+            item_metas.push((
+                child.label.clone(),
+                child.icon.clone(),
+                child.disabled,
+                child.on_click.clone(),
+            ));
             let tab_bar_prefix = child.tab_bar_prefix.unwrap_or(true);
             let mut tab = child
                 .ix(ix)
@@ -558,7 +572,9 @@ impl RenderOnce for TabBar {
                         .dropdown_caret(true)
                         .dropdown_menu(move |mut this, _, _| {
                             this = this.scrollable(true);
-                            for (ix, (label, icon, disabled)) in item_metas.iter().enumerate() {
+                            for (ix, (label, icon, disabled, child_on_click)) in
+                                item_metas.iter().enumerate()
+                            {
                                 let base = if let Some(label) = label.clone() {
                                     PopupMenuItem::new(label)
                                 } else if let Some(icon) = icon.clone() {
@@ -566,15 +582,18 @@ impl RenderOnce for TabBar {
                                 } else {
                                     PopupMenuItem::new(t!("Dock.Unnamed"))
                                 };
-                                this = this.item(
-                                    base.checked(selected_index == Some(ix))
-                                        .disabled(*disabled)
-                                        .when_some(on_click.clone(), |this, on_click| {
-                                            this.on_click(move |_, window, cx| {
-                                                on_click(&ix, window, cx)
-                                            })
-                                        }),
-                                );
+                                let item =
+                                    base.checked(selected_index == Some(ix)).disabled(*disabled);
+                                let item = if let Some(on_click) = on_click.clone() {
+                                    item.on_click(move |_, window, cx| on_click(&ix, window, cx))
+                                } else if let Some(child_on_click) = child_on_click.clone() {
+                                    item.on_click(move |event, window, cx| {
+                                        child_on_click(event, window, cx)
+                                    })
+                                } else {
+                                    item
+                                };
+                                this = this.item(item);
                             }
 
                             this
