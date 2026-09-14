@@ -468,12 +468,9 @@ impl Render for TreeState {
                             })
                             .child((render_item)(ix, entry, entry_state, window, cx))
                             .when(!entry.is_disabled(), |this| {
-                                this.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |state, _, _, cx| {
-                                        state.on_entry_click(ix, cx);
-                                    }),
-                                )
+                                this.on_click(cx.listener(move |state, _, _, cx| {
+                                    state.on_entry_click(ix, cx);
+                                }))
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |state, _, _, cx| {
@@ -561,7 +558,7 @@ impl RenderOnce for Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, Subscription};
+    use gpui::{AppContext as _, Modifiers, Subscription, TestAppContext, VisualTestContext, px};
 
     struct EventCollector {
         events: Rc<RefCell<Vec<TreeEvent>>>,
@@ -711,5 +708,70 @@ mod tests {
                 TreeEvent::Collapsed("src".into()),
             ]
         );
+    }
+
+    struct TreeHarness {
+        state: Entity<TreeState>,
+    }
+
+    impl Render for TreeHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Tree::new(&self.state)
+                .h(px(200.))
+                .list_style(StyleRefinement::default().size_full())
+                .item(|ix, entry, _, _, _| {
+                    div()
+                        .h(px(24.))
+                        .debug_selector(move || format!("entry-{ix}"))
+                        .child(entry.item().label.clone())
+                        .into_any_element()
+                })
+        }
+    }
+
+    fn tree_harness(cx: &mut TestAppContext) -> (Entity<TreeState>, &mut VisualTestContext) {
+        let items = vec![
+            TreeItem::new("src", "src").child(TreeItem::new("src/lib.rs", "lib.rs")),
+            TreeItem::new("README.md", "README.md"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        let (_, cx) = cx.add_window_view({
+            let state = state.clone();
+            move |_, _| TreeHarness { state }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (state, cx)
+    }
+
+    #[gpui::test]
+    fn an_entry_is_selected_and_toggled_on_release_not_on_press(cx: &mut TestAppContext) {
+        let (state, cx) = tree_harness(cx);
+        let folder = cx.debug_bounds("entry-0").unwrap().center();
+
+        cx.simulate_mouse_down(folder, MouseButton::Left, Modifiers::default());
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_index(), None);
+            assert_eq!(state.entries.len(), 2);
+        });
+
+        cx.simulate_mouse_up(folder, MouseButton::Left, Modifiers::default());
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_index(), Some(0));
+            assert_eq!(state.entries.len(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn releasing_over_another_entry_leaves_the_tree_unchanged(cx: &mut TestAppContext) {
+        let (state, cx) = tree_harness(cx);
+        let folder = cx.debug_bounds("entry-0").unwrap().center();
+        let file = cx.debug_bounds("entry-1").unwrap().center();
+
+        cx.simulate_mouse_down(folder, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(file, MouseButton::Left, Modifiers::default());
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_index(), None);
+            assert_eq!(state.entries.len(), 2);
+        });
     }
 }
