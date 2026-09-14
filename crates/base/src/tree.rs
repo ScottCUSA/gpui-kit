@@ -506,12 +506,9 @@ impl Render for TreeState {
                             })
                             .child((render_item)(ix, entry, entry_state, window, cx))
                             .when(!entry.is_disabled(), |this| {
-                                this.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |state, _, _, cx| {
-                                        state.on_entry_click(ix, cx);
-                                    }),
-                                )
+                                this.on_click(cx.listener(move |state, _, _, cx| {
+                                    state.on_entry_click(ix, cx);
+                                }))
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |state, _, _, cx| {
@@ -599,7 +596,7 @@ impl RenderOnce for Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, Subscription};
+    use gpui::{AppContext as _, Subscription, px};
 
     struct EventCollector {
         events: Rc<RefCell<Vec<TreeEvent>>>,
@@ -816,6 +813,59 @@ mod tests {
                 .position(|e| e.item.id == b_id)
                 .expect("selected item still present after expand");
             assert_eq!(state.selected_index(), Some(b_ix));
+        });
+    }
+
+    struct ClickHarness {
+        state: Entity<TreeState>,
+    }
+
+    impl Render for ClickHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(200.)).child(
+                Tree::new(&self.state)
+                    .size_full()
+                    .list_style(StyleRefinement::default().size_full())
+                    .item(|ix, entry, _, _, _| {
+                        div()
+                            .h(px(20.))
+                            .w_full()
+                            .debug_selector(move || format!("row-{ix}"))
+                            .child(entry.item().label.clone())
+                            .into_any_element()
+                    }),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn test_entry_selects_and_toggles_on_click_not_on_press(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("src", "src").child(TreeItem::new("src/lib.rs", "lib.rs")),
+            TreeItem::new("README.md", "README.md"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        let (_, cx) = cx.add_window_view({
+            let state = state.clone();
+            move |_, _| ClickHarness { state }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let row_0 = cx.debug_bounds("row-0").unwrap().center();
+        let row_1 = cx.debug_bounds("row-1").unwrap().center();
+
+        // A press that is released on another row is not a click on either.
+        cx.simulate_mouse_down(row_0, MouseButton::Left, Default::default());
+        cx.simulate_mouse_up(row_1, MouseButton::Left, Default::default());
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_index(), None);
+            assert!(!state.entries[0].is_expanded());
+        });
+
+        cx.simulate_click(row_0, Default::default());
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_index(), Some(0));
+            assert!(state.entries[0].is_expanded());
         });
     }
 }
