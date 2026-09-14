@@ -476,12 +476,9 @@ impl Render for TreeState {
                             })
                             .child((render_item)(ix, entry, entry_state, window, cx))
                             .when(!entry.is_disabled(), |this| {
-                                this.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |state, _, _, cx| {
-                                        state.on_entry_click(ix, cx);
-                                    }),
-                                )
+                                this.on_click(cx.listener(move |state, _, _, cx| {
+                                    state.on_entry_click(ix, cx);
+                                }))
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |state, _, _, cx| {
