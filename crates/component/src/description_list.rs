@@ -307,7 +307,7 @@ impl RenderOnce for DescriptionList {
 
                                     el.flex_1()
                                         .flex_basis(relative((span as f32) / (self.columns as f32)))
-                                        .overflow_x_hidden()
+                                        .min_w_0()
                                         .child(
                                             div()
                                                 .when(self.layout.is_horizontal(), |this| {
@@ -343,9 +343,9 @@ impl RenderOnce for DescriptionList {
                                         .child(
                                             div()
                                                 .flex_1()
+                                                .min_w_0()
                                                 .px(padding_x)
                                                 .py(padding_y)
-                                                .overflow_hidden()
                                                 .child(value),
                                         )
                                 }
@@ -361,7 +361,64 @@ impl RenderOnce for DescriptionList {
 
 #[cfg(test)]
 mod tests {
-    use super::DescriptionItem;
+    use super::{DescriptionItem, DescriptionList};
+    use gpui::{
+        Bounds, Context, IntoElement, ParentElement as _, Pixels, Render, Styled as _,
+        TestAppContext, Window, canvas, div, px,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    type Probes = Rc<RefCell<Vec<(Bounds<Pixels>, Bounds<Pixels>)>>>;
+
+    struct ClipHarness {
+        probes: Probes,
+    }
+
+    impl Render for ClipHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let items = (0..3).map(|index| {
+                let probes = self.probes.clone();
+                let probe = canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, _| {
+                        probes
+                            .borrow_mut()
+                            .push((bounds, window.content_mask().bounds));
+                    },
+                )
+                .w_full()
+                .h(px(60.));
+                (format!("key-{index}"), probe.into_any_element())
+            });
+            div().w(px(300.)).child(
+                items.fold(DescriptionList::new().columns(1), |list, (key, value)| {
+                    list.item(key, value, 1)
+                }),
+            )
+        }
+    }
+
+    /// A cell must not be its own clip mask: selectable text derives its drag auto-scroll zone from
+    /// the mask, and a cell-sized mask makes every drag move scroll the page.
+    #[gpui::test]
+    fn cells_do_not_clip_to_their_own_bounds(cx: &mut TestAppContext) {
+        let probes: Probes = Rc::default();
+        cx.update(crate::theme::init);
+        let (_, cx) = cx.add_window_view({
+            let probes = probes.clone();
+            move |_, _| ClipHarness { probes }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let probes = probes.borrow();
+        assert!(!probes.is_empty());
+        for (cell, mask) in probes.iter() {
+            assert!(
+                mask.size.height > cell.size.height * 2.,
+                "cell {cell:?} is clipped to its own row: mask {mask:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_group_item_rows() {
