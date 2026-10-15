@@ -361,7 +361,79 @@ impl RenderOnce for DescriptionList {
 
 #[cfg(test)]
 mod tests {
-    use super::DescriptionItem;
+    use super::{DescriptionItem, DescriptionList};
+    use crate::{Root, text::TextView};
+    use gpui::{
+        AppContext as _, Context, InteractiveElement as _, IntoElement, Modifiers, MouseButton,
+        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div,
+        point, px,
+    };
+    use gpui_base::TextSelection;
+    use std::time::Duration;
+
+    struct SelectionHarness;
+
+    impl Render for SelectionHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let values = ["First value", "Second value", "Third value"];
+            div().w(px(400.)).child(values.into_iter().enumerate().fold(
+                DescriptionList::new().columns(1),
+                |list, (ix, value)| {
+                    list.item(
+                        format!("Key {ix}"),
+                        div()
+                            .debug_selector(move || format!("value-{ix}"))
+                            .child(TextView::markdown(ix, value).selectable(true))
+                            .into_any_element(),
+                        1,
+                    )
+                },
+            ))
+        }
+    }
+
+    fn selected_text(cx: &mut VisualTestContext) -> String {
+        cx.update(|window, cx| TextSelection::selected_text(window, cx))
+    }
+
+    /// A selection dragged from one value into the next keeps reaching the value under the
+    /// pointer, both on the move and on every drag auto-scroll tick that follows it.
+    #[gpui::test]
+    fn a_selection_dragged_into_the_next_value_does_not_disappear(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| SelectionHarness);
+            Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let first = cx.debug_bounds("value-0").expect("first value bounds");
+        let second = cx.debug_bounds("value-1").expect("second value bounds");
+        let start = point(first.left() + px(2.), first.center().y);
+        let end = point(second.left() + px(40.), second.center().y);
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let on_move = selected_text(cx);
+        assert!(
+            on_move.contains("Seco"),
+            "the drag must select into the second value: {on_move:?}"
+        );
+
+        for tick in 0..4 {
+            cx.executor().advance_clock(Duration::from_millis(16));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let held = selected_text(cx);
+            assert!(
+                held.contains("Seco"),
+                "the selection disappeared from the second value on tick {tick}: {held:?}"
+            );
+        }
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    }
 
     #[test]
     fn test_group_item_rows() {

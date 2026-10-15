@@ -1152,6 +1152,11 @@ struct WindowSelectionState {
     /// cannot scroll further; pushing it on would only make one that
     /// bounces stretch and snap back on every tick.
     auto_scroll_stall: (Option<(Bounds<Pixels>, Point<Pixels>)>, u8),
+    /// Where the pointer making the selection is. Drag auto-scroll sends its
+    /// wheel events at the pointer clamped into the anchor's clipping region,
+    /// and the window takes that as the mouse position; a selection that
+    /// followed it would shrink back into the anchor's region on every tick.
+    pointer_position: Option<Point<Pixels>>,
     touch: TouchSelection,
     /// This entity, so that touch changes can notify observers from paths that
     /// only hold an [`App`].
@@ -1864,6 +1869,7 @@ impl WindowSelectionState {
             return;
         };
         let before = self.cursor.clone();
+        self.pointer_position = Some(finger);
         self.update_in_window(drag.text_position(finger), window, cx);
         // A handle never collapses the selection: at the other end it stops,
         // and the finger has to pass that end, onto text, to swap the two.
@@ -1907,6 +1913,7 @@ impl WindowSelectionState {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.pointer_position = Some(position);
         self.begin_impl(position, extend, true, Some(window), cx);
     }
 
@@ -2820,7 +2827,7 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
                 if std::mem::take(&mut state.refresh_held_cursor) && state.is_selecting {
                     // A handle drag holds the finger off the text; keep the
                     // same offset, or the cursor would hop between the two.
-                    let position = window.mouse_position();
+                    let position = state.pointer_position.unwrap_or(window.mouse_position());
                     let position = state
                         .touch
                         .drag
@@ -2936,6 +2943,7 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
             state.update(cx, |state, cx| match event.phase {
                 TouchPhase::Moved => {
                     state.is_selecting = true;
+                    state.pointer_position = Some(event.position);
                     state.update_in_window(event.position, window, cx);
                 }
                 TouchPhase::Ended | TouchPhase::Cancelled => {
@@ -3008,6 +3016,7 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
                 if state.touch.drag.is_some() {
                     return;
                 }
+                state.pointer_position = Some(event.position);
                 state.update_in_window(event.position, window, cx)
             });
             WindowSelectionState::resolve_content_keys(&state, cx);
@@ -3046,6 +3055,8 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
         if phase.bubble() && state.read(cx).is_selecting {
             let position = window.mouse_position();
             state.update(cx, |state, cx| {
+                // The scroll moved the text under the pointer, not the pointer.
+                let position = state.pointer_position.unwrap_or(position);
                 // A handle drag holds the finger off the text; keep its offset.
                 let position = state
                     .touch
